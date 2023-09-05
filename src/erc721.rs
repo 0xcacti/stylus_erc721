@@ -1,5 +1,5 @@
+use alloc::{string::String, vec::Vec};
 use core::marker::PhantomData;
-
 use stylus_sdk::{
     alloy_primitives::{Address, U256},
     alloy_sol_types::sol,
