@@ -10,6 +10,14 @@ use stylus_sdk::{
     prelude::*,
 };
 
+use rand::Rng;
+
+use image::codecs::png::PngEncoder;
+use image::{ImageOutputFormat, RgbImage};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use std::fs;
+
 /// Initializes a custom, global allocator for Rust programs compiled to WASM.
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
@@ -48,5 +56,72 @@ impl Julia {
         if self.erc721.owner_of(token_id)? == Address::ZERO {
             return Err("Token does not exist".into());
         }
+        let mut rng = SmallRng::seed_from_u64(token_id.into());
+
+        let width: u32 = 800;
+        let height: u32 = 800;
+        let max_iter: u32 = 1000;
+
+        let cx: f64 = rng.gen_range(-1.0..1.0);
+        let cy: f64 = rng.gen_range(-1.0..1.0);
+
+        let img = self.generate_julia(cx, cy, width, height, max_iter);
+        let base64_img = self.image_to_base64(&img);
+        let html = format!(
+            "<img src=\"data:image/png;base64,{}\" alt=\"Julia Set\">",
+            base64_img
+        );
+        Ok(html)
+    }
+
+    fn image_to_base64(&self, img: &RgbImage) -> String {
+        let mut buffer: Vec<u8> = Vec::new();
+        let encoder = PngEncoder::new(&mut buffer);
+        encoder
+            .encode(
+                img.as_ref(),
+                img.width(),
+                img.height(),
+                image::ColorType::Rgb8,
+            )
+            .expect("Failed to encode image to PNG");
+
+        base64::encode(&buffer)
+    }
+
+    fn generate_julia(&self, cx: f64, cy: f64, width: u32, height: u32, max_iter: u32) -> RgbImage {
+        let scalex = 3.0 / width as f64;
+        let scaley = 3.0 / height as f64;
+        let mut img = RgbImage::new(width, height);
+
+        for x in 0..width {
+            for y in 0..height {
+                let zx = x as f64 * scalex - 1.5;
+                let zy = y as f64 * scaley - 1.5;
+                let mut xi = zx;
+                let mut yi = zy;
+                let mut iter = 0;
+
+                while xi * xi + yi * yi < 4.0 && iter < max_iter {
+                    let temp = xi * xi - yi * yi + cx;
+                    yi = 2.0 * xi * yi + cy;
+                    xi = temp;
+                    iter += 1;
+                }
+
+                let pixel = if iter == max_iter {
+                    [0, 0, 0]
+                } else {
+                    [
+                        (iter % 8 * 32) as u8,
+                        (iter % 16 * 16) as u8,
+                        (iter % 32 * 8) as u8,
+                    ]
+                };
+                img.put_pixel(x, y, image::Rgb(pixel));
+            }
+        }
+
+        img
     }
 }
