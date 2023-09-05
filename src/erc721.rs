@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use stylus_sdk::{
     alloy_primitives::{Address, U256},
-    alloy_sol_types::{sol, SolError},
+    alloy_sol_types::sol,
     evm, msg,
     prelude::*,
 };
@@ -13,6 +13,11 @@ sol! {
     event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
 
     error NonexistentToken(uint256 id);
+    error NotOwner();
+    error NotAuthorized();
+    error InvalidRecipient();
+    error NotApprovedForAll();
+
 }
 
 pub trait ERC721Params {
@@ -39,6 +44,7 @@ pub enum ERC721Error {
     InvalidRecipient,
     NotApprovedForAll,
     NonexistentToken(U256),
+    NotMinted,
 }
 
 impl From<ERC721Error> for Vec<u8> {
@@ -47,12 +53,13 @@ impl From<ERC721Error> for Vec<u8> {
             ERC721Error::NonexistentToken(e) => format!("ERC721: nonexistent token {}", e)
                 .to_string()
                 .into_bytes(),
-            NotOwner => b"ERC721: caller is not owner".to_vec(),
-            NotAuthorized => b"ERC721: Not Authorized".to_vec(),
-            InvalidRecipient => b"ERC721: Invalid Recipient".to_vec(),
-            NotApprovedForAll => {
+            ERC721Error::NotOwner => b"ERC721: caller is not owner".to_vec(),
+            ERC721Error::NotAuthorized => b"ERC721: Not Authorized".to_vec(),
+            ERC721Error::InvalidRecipient => b"ERC721: Invalid Recipient".to_vec(),
+            ERC721Error::NotApprovedForAll => {
                 b"ERC721: transfer caller is not owner nor approved for all".to_vec()
             }
+            ERC721Error::NotMinted => b"ERC721: not minted".to_vec(),
         }
     }
 }
@@ -69,15 +76,27 @@ impl<T: ERC721Params> ERC721<T> {
         Ok(T::NAME.into())
     }
 
-    pub fn balance_of(&self, owner: Address) -> Result<U256, ERC721Error> {
-        Ok(self._balanceOf.get(owner))
-    }
-
     pub fn owner_of(&self, id: U256) -> Result<Address, ERC721Error> {
         if self._ownerOf.get(id) == Address::ZERO {
             return Err(ERC721Error::NonexistentToken(id));
         }
         Ok(self._ownerOf.get(id))
+    }
+
+    pub fn balance_of(&self, owner: Address) -> Result<U256, ERC721Error> {
+        Ok(self._balanceOf.get(owner))
+    }
+
+    pub fn get_approved(&self, id: U256) -> Result<Address, ERC721Error> {
+        Ok(self.getApproved.get(id))
+    }
+
+    pub fn is_approved_for_all(
+        &self,
+        owner: Address,
+        operator: Address,
+    ) -> Result<bool, ERC721Error> {
+        Ok(self.isApprovedForAll.get(owner).get(operator))
     }
 
     pub fn approve(&mut self, spender: Address, id: U256) -> Result<(), ERC721Error> {
@@ -93,18 +112,15 @@ impl<T: ERC721Params> ERC721<T> {
         Ok(())
     }
 
-    pub fn get_approved(&self, id: U256) -> Result<Address, ERC721Error> {
-        Ok(self.getApproved.get(id))
-    }
-
     pub fn set_approval_for_all(
         &mut self,
         operator: Address,
         approved: bool,
     ) -> Result<(), ERC721Error> {
         let caller = msg::sender();
+
         self.isApprovedForAll
-            .setter(msg::sender())
+            .setter(caller)
             .setter(operator)
             .set(approved);
 
@@ -115,14 +131,6 @@ impl<T: ERC721Params> ERC721<T> {
         });
 
         Ok(())
-    }
-
-    pub fn is_approved_for_all(
-        &self,
-        owner: Address,
-        operator: Address,
-    ) -> Result<bool, ERC721Error> {
-        Ok(self.isApprovedForAll.get(owner).get(operator))
     }
 
     pub fn transfer_from(
@@ -146,16 +154,192 @@ impl<T: ERC721Params> ERC721<T> {
         {
             return Err(ERC721Error::NotAuthorized.into());
         }
-        let mut balance_setter = self._balanceOf.setter(from);
-        let mut balance_getter = self._balanceOf.getter(from);
-        balance_setter.set(from) - U256::from(1));
 
-        self._balanceOf
-            .setter(to)
-            .set(self._balanceOf.get(to) + U256::from(1));
-        self._ownerOf.setter(id).set(to);
-        self.getApproved.setter(id).set(Address::ZERO);
+        let old_balance_from = self._balanceOf.get(from);
+        let mut from_balance_setter = self._balanceOf.setter(from);
+        from_balance_setter.set(old_balance_from - U256::from(1));
+
+        let old_balance_to = self._balanceOf.get(to);
+        let mut to_balance_setter = self._balanceOf.setter(to);
+        to_balance_setter.set(old_balance_to + U256::from(1));
+
+        let mut owner_of_setter = self._ownerOf.setter(id);
+        owner_of_setter.set(to);
+
+        let mut approved_setter = self.getApproved.setter(id);
+        approved_setter.set(Address::ZERO);
         evm::log(Transfer { from, to, id });
         Ok(())
     }
+
+    pub fn safe_transfer_from(
+        &mut self,
+        from: Address,
+        to: Address,
+        id: U256,
+    ) -> Result<(), ERC721Error> {
+        self.transfer_from(from, to, id)?;
+
+        // Solidity equivalent
+        // require(
+        //    to.code.length == 0 ||
+        //        ERC721TokenReceiver(to).onERC721Received(msg.sender, from, id, "") ==
+        //        ERC721TokenReceiver.onERC721Received.selector,
+        //    "UNSAFE_RECIPIENT"
+        // );
+
+        Ok(())
+    }
+
+    pub fn safe_transfer_from_with_data(
+        &mut self,
+        from: Address,
+        to: Address,
+        id: U256,
+        data: Vec<u8>,
+    ) -> Result<(), ERC721Error> {
+        self.transfer_from(from, to, id)?;
+
+        // Solidity equivalent
+        // require(
+        //     to.code.length == 0 ||
+        //         ERC721TokenReceiver(to).onERC721Received(msg.sender, from, id, data) ==
+        //         ERC721TokenReceiver.onERC721Received.selector,
+        //     "UNSAFE_RECIPIENT"
+        // );
+
+        Ok(())
+    }
+
+    // I have no idea how this is supposed to work
+    pub fn supports_interface(&self, interface_id: Vec<u8>) -> Result<bool, ERC721Error> {
+        Ok(interface_id == vec![0x01, 0xff, 0xc9, 0xa7]
+            || interface_id == vec![0x80, 0xac, 0x58, 0xcd]
+            || interface_id == vec![0x5b, 0x5e, 0x13, 0x9f])
+    }
 }
+
+// Implement internal methods
+impl<T: ERC721Params> ERC721<T> {
+    pub fn _mint(&mut self, to: Address, id: U256) -> Result<(), ERC721Error> {
+        if self._ownerOf.get(id) != Address::ZERO {
+            return Err(ERC721Error::InvalidRecipient);
+        }
+
+        let old_balance = self._balanceOf.get(to);
+        let mut balance_setter = self._balanceOf.setter(to);
+        balance_setter.set(old_balance + U256::from(1));
+
+        let mut owner_of_setter = self._ownerOf.setter(id);
+        owner_of_setter.set(to);
+
+        evm::log(Transfer {
+            from: Address::ZERO,
+            to,
+            id,
+        });
+        Ok(())
+    }
+
+    pub fn _burn(&mut self, owner: Address, id: U256) -> Result<(), ERC721Error> {
+        if self._ownerOf.get(id) != owner {
+            return Err(ERC721Error::NotMinted);
+        }
+
+        let old_balance = self._balanceOf.get(owner);
+        let mut balance_setter = self._balanceOf.setter(owner);
+        balance_setter.set(old_balance - U256::from(1));
+
+        let mut owner_of_setter = self._ownerOf.setter(id);
+        owner_of_setter.set(Address::ZERO);
+
+        let mut approved_setter = self.getApproved.setter(id);
+        approved_setter.set(Address::ZERO);
+
+        evm::log(Transfer {
+            from: owner,
+            to: Address::ZERO,
+            id,
+        });
+        Ok(())
+    }
+
+    // pub fn _safe_mint(&mut self, to: Address, id: U256) -> Result<(), ERC721Error> {
+    //     self._mint(to, id)?;
+    //
+    //     // Solidity equivalent
+    //     // require(
+    //     //    to.code.length == 0 ||
+    //     //        ERC721TokenReceiver(to).onERC721Received(msg.sender, address(0), id, "") ==
+    //     //        ERC721TokenReceiver.onERC721Received.selector,
+    //     //    "UNSAFE_RECIPIENT"
+    //     // );
+    //     Ok(())
+    // }
+
+    // pub fn _same_mint_with_data(
+    //     &mut self,
+    //     to: Address,
+    //     id: U256,
+    //     data: Vec<u8>,
+    // ) -> Result<(), ERC721Error> {
+    //    self._mint(to, id)?;
+    //
+    //      // Solidity equivalent
+    //      // require(
+    //      //    to.code.length == 0 ||
+    //      //        ERC721TokenReceiver(to).onERC721Received(msg.sender, address(0), id, "") ==
+    //      //        ERC721TokenReceiver.onERC721Received.selector,
+    //      //    "UNSAFE_RECIPIENT"
+    //      // );
+    //      //    Ok(())
+    // }
+}
+
+// trait SafeTransferFromWithData {
+//     fn safe_transfer_from(
+//         &mut self,
+//         from: Address,
+//         to: Address,
+//         id: U256,
+//         data: Vec<u8>,
+//     ) -> Result<(), ERC721Error>;
+// }
+//
+// trait SafeTransferFrom {
+//     fn safe_transfer_from(
+//         &mut self,
+//         from: Address,
+//         to: Address,
+//         id: U256,
+//     ) -> Result<(), ERC721Error>;
+// }
+//
+// #[external]
+// impl<T: ERC721Params> SafeTransferFrom for ERC721<T> {
+//     fn safe_transfer_from(
+//         &mut self,
+//         from: Address,
+//         to: Address,
+//         id: U256,
+//     ) -> Result<(), ERC721Error> {
+//         self.safe_transfer_from_with_data(from, to, id, Vec::new())
+//     }
+// }
+//
+// #[external]
+// impl<T: ERC721Params> SafeTransferFromWithData for ERC721<T> {
+//     fn safe_transfer_from(
+//         &mut self,
+//         from: Address,
+//         to: Address,
+//         id: U256,
+//         data: Vec<u8>,
+//     ) -> Result<(), ERC721Error> {
+//         self.transfer_from(from, to, id)?;
+//         if !self.check_on_erc721_received(from, to, id, data)? {
+//             return Err(ERC721Error::InvalidRecipient);
+//         }
+//         Ok(())
+//     }
+// }
