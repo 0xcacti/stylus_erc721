@@ -2,6 +2,8 @@
 #![cfg_attr(not(feature = "export-abi"), no_main)]
 extern crate alloc;
 
+use std::f64::consts::PI;
+
 use crate::erc721::{ERC721Params, ERC721};
 use alloc::{string::String, vec::Vec};
 use base64::{engine::general_purpose, Engine as _};
@@ -89,8 +91,10 @@ impl Julia {
         let height: u32 = 800;
         let max_iter: u32 = 1000;
 
-        let cx: f64 = rng.gen_range(-1.0..1.0);
-        let cy: f64 = rng.gen_range(-1.0..1.0);
+        let theta: f64 = rng.gen_range(0.0..2.0 * PI);
+
+        let cx = 0.7885 * theta.cos();
+        let cy = 0.7885 * theta.sin();
         let scalex = 3.0 / width as f64;
         let scaley = 3.0 / height as f64;
         let mut img = RgbImage::new(width, height);
@@ -113,16 +117,27 @@ impl Julia {
                 let pixel = if iter == max_iter {
                     [0, 0, 0]
                 } else {
-                    [
-                        (iter % 8 * 32) as u8,
-                        (iter % 16 * 16) as u8,
-                        (iter % 32 * 8) as u8,
-                    ]
+                    let zn = (xi * xi + yi * yi).sqrt();
+                    let nu = (zn.log2()).log2();
+                    let smooth = (iter as f64 + 1.0 - nu) / max_iter as f64;
+                    let color = self.gradient_color(smooth);
+                    img.put_pixel(x, y, image::Rgb([color.0, color.1, color.2]));
+
+                    [color.0, color.1, color.2]
                 };
+
                 img.put_pixel(x, y, image::Rgb(pixel));
             }
         }
 
         Ok(img)
+    }
+
+    fn gradient_color(&self, t: f64) -> (u8, u8, u8) {
+        let r = (9.0 * (1.0 - t) * t * t * t * 255.0) as u8;
+        let g = (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u8;
+        let b = (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u8;
+
+        (r, g, b)
     }
 }
