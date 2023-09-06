@@ -14,12 +14,13 @@ alloy-sol-types = "0.3.1"
 stylus-sdk = "0.2.0"
 hex = "0.4.3"
 wee_alloc = "0.4.5"
-rand = "0.8.5"
+rand = { version = "0.8.5", features = ["small_rng"] }
 base64 = "0.21.3"
-image = "0.24.7"
+image = { version = "0.24.7", default-features = false, features = ["png"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
-tokio = { version = "1.12.0", features = ["full"] } 
+tokio = { version = "1.32.0", features = ["full"] }  # 'full' feature enables all the available features.
 ethers = "2.0"
 eyre = "0.6.8"
 

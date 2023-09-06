@@ -4,19 +4,18 @@ extern crate alloc;
 
 use crate::erc721::{ERC721Params, ERC721};
 use alloc::{string::String, vec::Vec};
+use base64::{engine::general_purpose, Engine as _};
 use stylus_sdk::{
     alloy_primitives::{Address, U256},
     msg,
     prelude::*,
 };
 
-use rand::Rng;
-
 use image::codecs::png::PngEncoder;
-use image::{ImageOutputFormat, RgbImage};
+use image::ImageEncoder;
+use image::RgbImage;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use std::fs;
 
 /// Initializes a custom, global allocator for Rust programs compiled to WASM.
 #[global_allocator]
@@ -48,7 +47,8 @@ sol_storage! {
 impl Julia {
     #[payable]
     pub fn mint(&mut self) -> Result<(), Vec<u8>> {
-        self.erc721._mint(msg::sender(), self.token_id.into())?;
+        self.erc721
+            ._mint(msg::sender(), self.token_id.clone().into())?;
         Ok(())
     }
 
@@ -56,29 +56,13 @@ impl Julia {
         if self.erc721.owner_of(token_id)? == Address::ZERO {
             return Err("Token does not exist".into());
         }
-        let mut rng = SmallRng::seed_from_u64(token_id.into());
 
-        let width: u32 = 800;
-        let height: u32 = 800;
-        let max_iter: u32 = 1000;
-
-        let cx: f64 = rng.gen_range(-1.0..1.0);
-        let cy: f64 = rng.gen_range(-1.0..1.0);
-
-        let img = self.generate_julia(cx, cy, width, height, max_iter);
-        let base64_img = self.image_to_base64(&img);
-        let html = format!(
-            "<img src=\"data:image/png;base64,{}\" alt=\"Julia Set\">",
-            base64_img
-        );
-        Ok(html)
-    }
-
-    fn image_to_base64(&self, img: &RgbImage) -> String {
+        let img = self.generate_julia(token_id)?;
         let mut buffer: Vec<u8> = Vec::new();
         let encoder = PngEncoder::new(&mut buffer);
+
         encoder
-            .encode(
+            .write_image(
                 img.as_ref(),
                 img.width(),
                 img.height(),
@@ -86,10 +70,27 @@ impl Julia {
             )
             .expect("Failed to encode image to PNG");
 
-        base64::encode(&buffer)
-    }
+        // let base64_img = Engine::encode(&buffer, &config);
+        let base64_img = general_purpose::STANDARD.encode(&buffer);
 
-    fn generate_julia(&self, cx: f64, cy: f64, width: u32, height: u32, max_iter: u32) -> RgbImage {
+        let html = format!(
+            "<img src=\"data:image/png;base64,{}\" alt=\"Julia Set\">",
+            base64_img
+        );
+        Ok(html)
+    }
+}
+
+impl Julia {
+    fn generate_julia(&self, token_id: U256) -> Result<RgbImage, Vec<u8>> {
+        let mut rng = SmallRng::seed_from_u64(token_id.wrapping_to::<u64>());
+
+        let width: u32 = 800;
+        let height: u32 = 800;
+        let max_iter: u32 = 1000;
+
+        let cx: f64 = rng.gen_range(-1.0..1.0);
+        let cy: f64 = rng.gen_range(-1.0..1.0);
         let scalex = 3.0 / width as f64;
         let scaley = 3.0 / height as f64;
         let mut img = RgbImage::new(width, height);
@@ -122,6 +123,6 @@ impl Julia {
             }
         }
 
-        img
+        Ok(img)
     }
 }
